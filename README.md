@@ -90,6 +90,21 @@ curl -X POST "http://localhost:8000/v1/report/insight" \
   -d '{"content": "your text", "model": "deepseek", "depth_level": 2}'
 ```
 
+### Rate Limiting
+
+This API implements rate limiting to ensure fair usage:
+
+- **API Key Creation**: 5 requests per minute per IP address
+- **Insight Generation**: 10 requests per minute per IP address
+- **Debug Endpoints**: 10 requests per minute per IP address
+
+When rate limited, you'll receive a `429 Too Many Requests` response. Rate limits reset every minute.
+
+**Check current rate limits:**
+```bash
+curl http://localhost:8000/rate-limits
+```
+
 ### Endpoint: POST /v1/report/insight
 
 **Request:**
@@ -159,14 +174,14 @@ Visit `http://localhost:8000/docs` for interactive API documentation.
 
 - Basic error handling
 - Simple API Key authentication (no user accounts)
-- No rate limiting per API key
+- Rate limiting per IP address (5-10 requests/minute)
 - No caching
 - No advanced features (batch processing, web UI)
 
 ## Next Steps (Future Versions)
 
 - User authentication & API keys
-- Rate limiting and quotas
+- Advanced rate limiting (per API key quotas)
 - Response caching
 - Web UI interface
 - Batch processing

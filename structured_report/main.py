@@ -1,5 +1,9 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from typing import List
 import httpx
 import json
@@ -11,13 +15,21 @@ import openai
 from .models import InsightRequest, InsightResponse, APIKeyRequest, APIKeyResponse
 
 load_dotenv()
-app = FastAPI()
+app = FastAPI(title="Deep Thinking Report API")
 
 # 简单的API Key存储（生产环境建议使用数据库）
 API_KEYS = set()
 
 # 安全验证器
 security = HTTPBearer(auto_error=False)
+
+# 限流配置
+limiter = Limiter(key_func=get_remote_address)
+
+# 添加限流中间件
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """验证API Key"""
@@ -117,7 +129,8 @@ async def call_api(model: str, prompt: str) -> dict:
     }
 
 @app.post("/api-keys", response_model=APIKeyResponse)
-async def create_api_key(request: APIKeyRequest):
+@limiter.limit("5/minute")  # API密钥获取限流：每分钟最多5个
+async def create_api_key(request_body: APIKeyRequest, request: Request):
     """生成新的API Key"""
     api_key = secrets.token_urlsafe(32)
     API_KEYS.add(api_key)
@@ -128,25 +141,28 @@ async def create_api_key(request: APIKeyRequest):
     )
 
 @app.get("/api-keys/count")
-async def get_api_keys_count():
+@limiter.limit("10/minute")  # 调试接口限流：每分钟最多10次
+async def get_api_keys_count(request: Request):
     """获取当前API Key数量（调试用）"""
     return {"total_api_keys": len(API_KEYS)}
 
 @app.post("/v1/report/insight", response_model=InsightResponse)
+@limiter.limit("10/minute")  # 主要API接口限流：每分钟最多10次分析请求
 async def generate_insight(
-    request: InsightRequest,
+    request_body: InsightRequest,
+    request: Request,
     api_key: str = Depends(verify_api_key)
 ):
-    if not request.content.strip():
+    if not request_body.content.strip():
         raise HTTPException(400, "Content required")
-    if request.model not in ["openai", "deepseek"]:
+    if request_body.model not in ["openai", "deepseek"]:
         raise HTTPException(400, "Invalid model")
-    if request.depth_level not in [1, 2, 3]:
+    if request_body.depth_level not in [1, 2, 3]:
         raise HTTPException(400, "Invalid depth")
 
     try:
-        prompt = get_prompt(request.content, request.depth_level)
-        result = await call_api(request.model, prompt)
+        prompt = get_prompt(request_body.content, request_body.depth_level)
+        result = await call_api(request_body.model, prompt)
 
         # Validate required fields
         required = ["core_claim", "supporting_arguments", "assumptions",
@@ -163,6 +179,16 @@ async def generate_insight(
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+@app.get("/rate-limits")
+async def get_rate_limits():
+    """获取当前限流配置信息"""
+    return {
+        "create_api_key": "5/minute",
+        "get_api_keys_count": "10/minute",
+        "generate_insight": "10/minute",
+        "note": "Rate limits are per IP address"
+    }
 
 def start_server():
     """CLI入口点"""
